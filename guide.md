@@ -413,3 +413,97 @@ Expectation 0 (3 matchers):
 X Query string name matches a collection containing "Ersatz"
 (3 matchers: 2 matched, 1 failed)
 ```
+
+## Logging Response Content
+
+- By default, the content of a response is only logged as its length(in bytes).
+- If the log-response-content feature flag is enabled, the entire content of the response will be written to the logs. This is helpful when debugging issues with tests.
+
+```
+final var server = new ErsatzServer(cfg -> {
+  cfg.logResponseContent();
+});
+```
+
+## Server Threads
+
+- By default (as of 3.1), the underlying server has 2 IO threads and 16 Worker threads configured (based on the recommended configuration for the underlying Undertow server). If you need to configure these values, you can use one of the `serverThreads` methods:
+
+```
+final var server = new ErsatzServer(cfg -> {
+  cfg.serverThreads(3);
+})
+```
+
+## Content Transformation
+
+- Content transformation involves converting the body content of HTTP requests amd responses from one format to another. This conversion is achieved using request decoders and response encoders.
+
+- Request Decoders: responsible for converting the incoming request body content into desired format that can be easily compared or processed. For example, if the incoming request body is in JSON format, a request decoder can convert it into a Java object for easier handling in tests.
+
+- Response Encoders: used to convert outgoing response objects into byte array data that can be sent over the HTTP connection. For instance, if the application generates response objects in Java, response encoders can serialize these objects into JSON format before sending them as HTTP responses.
+
+- decoders and encoders can be configured at different levels
+
+- Global Configuration: Decoders and encoders configured at the `ServerConfig` level are considered global. They are applied to all request/response interactions unless overidden by local configurations.
+
+- Local Configuration: Decoders and encoders configured in specific request/response expectations override global configurations for the same content. This allows for fine-grained control over the transformation process for individual interactions.
+
+```
+// Global configuration of request decoder
+ServerConfig globalConfig = new ServerConfig();
+globalConfig.addRequestDecoder(new JsonDecoder());
+
+// Local configuration for response encoder in a specific expectation
+ErsatzServer server = new ErsatzServer(cfg -> {
+  cfg.expectations(expect -> {
+    expect.GET("/api/resource")
+      .responder(res -> {
+        res.body(new Resource("example"), ContentType.APPLICATION_JSON);
+      })
+      .encoder(new JsonEncoder());
+  });
+});
+
+public void handleRequest(Request request) {
+  Object requestData = request.decodeBody();
+  Resource resource = new Resource("example");
+  byte[] responseData = server.encodeResponse(resource);
+}
+```
+
+## Expectations
+
+- When you setting up a Ersatz server to hande incoming HTTP requests during testing, the server needs to know how to respond to different types of requests. These instructions for how the server should respond to requests are called "expectations".
+
+- Expectations: instructions or rules you set for the server. Each expectatio tells the server that to do when it receives a specific type of HTTP request.
+
+- Configuring Expectations: you set up expectations using `Expectations` interface. This interface provides method for configuring expectations for different HTTP request methods like GET, POST, PUT, etc.
+
+```
+ErsatzServer server = new ErsatzServer(cfg -> {
+  cfg.expectations(expect -> {
+    expect.GET("/api/resources") // Expect a GET request to "/api/resouce"
+      .responder(res -> { // Define how to respond to this request
+        res.body("Hello, Ersatz!"); // respond with "Hello, Ersatz!"
+      });
+  });
+});
+```
+
+## Requirements
+
+- These are conditions or rules that a request must meet to be considered valid.
+
+- They are similar to expectations but serve only to verify requests rather than define how the server should respond.
+
+- Configuring Requirements: you set up requirements using `Requirements` interface. This interface provides method for configuring requirements based on request method and path.
+
+```
+ErsatzServer server = new ErsatzServer(cfg -> {
+  cfg.requirements(reqs -> {
+    reqs.GET("/api/resources") // Specify the request method and path
+      .requireHeader("Authorization") // Ensure that requests must contain the Authorization header
+  })
+})
+```
