@@ -507,3 +507,545 @@ ErsatzServer server = new ErsatzServer(cfg -> {
   })
 })
 ```
+
+## Request Decoders
+
+- Request decoders are used to convert the bytes of incoming request content into a specified object type.
+- This conversion allows the server to match the incoming request content against the expected content defined in the server's expectations.
+- They are implemented as a `BiFunction<byte[], DecodingContext, Object>`, where `byte[]` is the request content and the `Object` is the result of transforming the content. The `Decoding Context` is used to provide additional information about the request being decoded (e.g. content-length, content type, character-encoding), along with a reference to the decoder chain.
+- Decoders are defined at various levels with the same method signature:
+
+```
+ServerConfig decoder(String contentType, BiFunction<byte[], DecodingContext, Object> decoder)
+```
+
+- Example:
+
+```
+// Define a request decoder for JSON content
+def jsonDecoder = { content, context ->
+  // Convert the request content bytes to a Groovy data structure
+  new JsonSlurper().parse(content ?: '{}'.bytes)
+}
+
+// Create an instance of ErsatzServer
+def server = new ErsatzServer { cfg ->
+  // Register the JSON decoder for JSON content using ServerConfig
+  cfg.decoder(ContentType.APPLICATION_JSON, jsonDecoder)
+}
+```
+
+## Provided Decoders
+
+- The provided decoder in the `io.github.cjstehno.ersatz.encdec.Decoders` class offer convenient way to handle common senarios when decoding request content in the server.
+
+1. Pass-through
+
+- This decoder simply passes the content byte array through as an array of bytes.
+- It's useful when you don't need to decode the request content and want to handle it as raw bytes
+- Example: `cfg.decoder(ContentType.APPLICATION_JSON, Decoder.passThrough()`)
+
+2. Strings
+
+- convert the request content bytes into a String object, with optional Charset specification
+- `cfg.decoder(ContentType.TEXT_PLAIN, Decoder.strings(StandardCharsets.UTF_8))`
+
+3. URL-Encoded
+
+- convert request content butes in a URL-encoded format into a map of name/value pairs
+- It's useful when dealing with form submissions where data is sent in the URL-encoded format
+- `cfg.decoder(ContentType.APPLICATION_FORM_URLENCODED, Decoders.urlEncoded())`
+
+4. Multipart
+
+- This decoder converts request content bytes into a `MultipartRequestContent` object populated with the multipart request content
+- It's useful when handling multipart form data uploads
+- `cfg.decoder(ContentType.MULTIPART_FORM_DATA, Decoders.multipart())`
+
+## JSON Decoders
+
+- JSON decoders are configured using the `decoder` method on a `ServerConfig` instance. This method takes the content type of the expected request content (in this case, `ContentType.APPLICATION_JSON`) and a function that performs the decoding.
+
+1. Groovy Decoder
+
+- Groovy `JsonSlurper` takes the content and context as parameters to parse the content into a Groovy object. If the content is null, it defaults to an empty JSON object(`{}`). This decoder is suitable for use in Groovy
+
+```
+decoder(ContentType.APPLICATION_JSON) { content, context ->
+  new JsonSlurper().parse(content ?: '{}'.bytes)
+}
+```
+
+2. Jackson Decoder
+
+- Jackson `ObjectMapper`, a popular Java library for JSON processing. The decoder function takes the content and context as parameters. It uses the `ObjectMapper` to deserialize the JSON content into a `Map` object. This decoder is suitable for use in Java applications.
+
+```
+decoder(ContentType.APPLICATION_JSON, (content, context) -> {
+  return new ObjectMapper().readValue(content, Map.class);
+});
+```
+
+## Response Encoders
+
+- to convert response configuration data types into the outbound request content string.
+- They are implemented as a `Function<object, byte[]`> with the input `Object` being the configuration object being converted, and the `byte[]` is the return type.
+
+- The various configuration levels have the same method signature:
+
+```
+ServerConfig encoder(String contentType, class objectType, Function<Object, byte[]> encoder)
+```
+
+- The `contentType` is the response content type to be encoded and the `objectType` is the type of configuration object to be encoded - this allows for the same content-type to have different encoders for different configuration object types
+
+- Example of default "text" encoder
+
+```
+static function<Object, byte[]> text(final Charset charset) {
+  return obj -> (obj != null ? obj.toString() : "").getBytes(charset);
+}
+```
+
+- To use this encoder, you can configure it in a similar manner in both the server configuration block or in the response configuration block itself, which is shown below:
+
+```
+server.expectations(expect -> {
+  expect.POST('/submit', req -> {
+    req.responder(res -> {
+      res.encoder(TEXT_PLAIN, String.class, Encoders.text(UTF_8));
+      req.body("This is a string response!", TEXT_PLAIN);
+    });
+  });
+});
+```
+
+## Provided Encoders
+
+- `io.github.cjestehno.ersatz.encdec.Encoders` provides a handful of commonly used encoders
+
+1. Text
+
+- convert the object into a String of text
+- It has an optional character set specification
+
+```
+serverConfig.encoder(ContentType.TEXT_PLAIN, String.class, Encoders.text(StandardCharsets.UTF_8));
+```
+
+2. Content
+
+- loads the content at the specified destination and returns it as a byte array
+- The content destination may be specified as an InputStream, String, Path, File, URI or URL.
+
+```
+serverConfig.encoder(ContentType.IMAGE_PNG, byte[].class, Encoders.content("path/to/image.png"));
+```
+
+3. Binary Base64
+
+- encodes a byte array, InputStream, or other object with a "getBytes()" method into a base-64 string
+
+```
+serverConfig.encoder(ContentType.APPLICATION_OCTET_STREAM, byte[].class, Encoders.binaryBase64());
+```
+
+4. Multipart
+
+- encodes a MultipartResponseContent object to its multipart string representation
+
+```
+serverConfig.encoder(ContentType.MULTIPART_FORM_DATA, MultipartResponseContent.class, Encoders.multipart());
+```
+
+## JSON Encoders
+
+1. Groovy JSON Encoder
+
+- serialize an object into a JSON string using Groovy's JsonOutput
+
+```
+public static final Function<Object, byte[]> json = obj -> {
+  (obj != null ? toJson(obj) : "{}").getbytes(UTF_8);
+}
+
+encoder(Contenttype.APPLICATION_JSON, MyType.class, obj ->
+  JsonOutput.toJson(obj).getBytes(UTF_8)
+);
+```
+
+2. Jackson JSON Encoder
+
+- serializes an object into a JSON byte array using the Jackson ObjectMapper
+
+```
+encoder(ContentType.APPLICATION_JSON, MyType.class, obj -> {
+  return new ObjectMapper().writeValueAsBytes(obj);
+});
+```
+
+## Request Requirements
+
+- Global request requirements allow for common configuration of expectation amcthing requirements in the `ServerConfig` rather than in the individual expectations.
+
+- Consider the case where every request to a server must have some security token configured as a header (say "Security-token") and that all requests must use HTTPS.
+
+```
+var server = new ErsatzServer(cfg -> {
+  cfg.requirements(require -> {
+    require.that(ANY, anyPath(), and -> {
+      and.secure();
+      and.header("Security-Token", expectedToken);
+    });
+  });
+});
+```
+
+## Request Expectations
+
+- The expectation definition methods take four common forms:
+
+1. Using a string path
+
+- This is the simplest form where you specify the request path as a tring
+
+```
+server.expectations(expect -> {
+  expect.GET("/api/users").responder(res -> {
+    res.body("{\"name\": \"John\"}", ContentType.APPLICATION_JSON);
+  });
+});
+```
+
+2. String path with a Consumer<Request>
+
+- This allows for additional customization using a consumer function
+
+```
+server.expectations(expect -> {
+  expect.GET("/api/users", req -> {
+    req.header("Authorization", "Bearer token123");
+  }).responder(res -> {
+    res.body("{\"name\": \"John\"}", ContentType.APPLICATION_JSON);
+  });
+});
+```
+
+3. String path with a Groovy Closure
+
+- Similar to second method but uses a Groovy Closure for customization
+
+```
+server.expectations(expect -> {
+  expect.GET("/api/users") {
+    header("Authorization", "Bearer roken123");
+  }.responser {
+    body("{\"name\": \"John\"}", ContentType.APPLICATION_JSON);
+  });
+});
+```
+
+4. Using a Hamcrest Matcher<String> for matching the path
+
+- This allows for flexile path matching based on various request properties
+
+```
+import static org.hamcrest.Matchers.*;
+
+server.expectations(expect -> {
+  expect.GET(startsWith("/api")) { req ->
+    req.header("Authorization", "Bearer token123");
+  }.responder(res -> {
+    res.body("{\"name\": \"John\"}", ContentType.APPLICATION_JSON);
+  });
+});
+```
+
+- ANY Request Method Matcher: support for an ANY request method matcher configuration
+
+```
+server.expectations(expect -> {
+  expect.ANY("/api/**").responder(res -> {
+    res.status(HttpStatus.NOT_FOUND);
+  });
+});
+```
+
+- Configuration interfaces support three main approaches to configuration
+
+1. Chained builder approach
+
+```
+HEAD('/foo')
+  .query('a', '42)
+  .cookie('stamp', '1234')
+  .respond().header('ok', 'true')
+```
+
+2. Groovy DSL approach
+
+```
+HEAD('/foo')
+  query 'a', '42'
+  cookie 'stamp', '1234'
+  responder {
+    header 'ok', 'true'
+  }
+```
+
+3. Java-based approach using the `Consumer<?>`
+
+```
+HEAD('/foo', req -> {
+  req.query("a", "42")
+  req.cookie("stamp", "1234")
+  req.responder( res -> {
+    res.header("ok", "true")
+  })
+})
+```
+
+- Request expectations mau be configured to respond differently based on how many times a request is matched.
+
+```
+GET('/something') {
+  responder {
+    content 'Hello'
+  }
+  responder {
+    content "Goodbye'
+  }
+  /* Addding the called configurations ad the extra safety of ensuring that if the request is called more than our expected two times, the verification will fail
+  */
+  called 2
+}
+```
+
+## Request Methods
+
+1. HEAD
+
+- A `HEAD` request is used to retrieve the headers for a URL, basically a `GET` request without any reponse body.
+
+```
+ersatzServer.expectations {
+  HEAD('/something').responds().header('X-Alpha', 'Interesting-data').code(200)
+}
+```
+
+2. GET
+
+- The `GET` request is a common HTTP request, and what browsers do by default. It has no request body, but it does have response content. You mock `GET` requests using the `get()` mehtods as follows:
+
+```
+ersatzServer.expectations {
+  GET('/something').responds().body('this is INTERESTING!', 'text/plain').code(200)
+}
+```
+
+3. OPTIONS
+
+- `OPTIONS` HTTP request method is similar to an `HEAD`request, having no request or response body.
+- The primary response value is an `OPTIONS` request is the content of the `Allow` response header, which will contain a comma-seperated list of the request methods supported by the server
+- In order to mock out an `OPTIONS` request, you will want to respond with a provided `Allow` header. This may be done using the `Response.allows(HttpMethod...)` method in the responder
+
+```
+ersatzServer.expectations {
+  OPTIONS('/options').responds().allows(GET, POST).code(200)
+  OPTIONS('/*').responds().allows(DELETE, GET, OPTIONS).code(200)
+}
+```
+
+4. POST
+
+- The `POST` request is often used to send browser form data to a backend server. It can have both request and response content
+
+```
+ersatzServer.expectations{
+  POST('/form') {
+    body([first:'Shawn', last:'Teh'], APPLICATION_URLENCODED)
+    responder {
+      body('{status: "saved"}', APPLICATION_JSON)
+    }
+  }
+}
+```
+
+- In a RESTful interface,the `POST` method is generally ised to "create" new resources
+
+5. PUT
+
+- A `PUT` request is similar to `POST` except that while there is request content, there is no response body content.
+
+```
+ersatzServer.expectations {
+  PUT('/form') {
+    query('id', '1234')
+    body([middle: 'Q'], APPLICATION_URLENCODED)
+    responder {
+      code(200)
+    }
+  }
+}
+```
+
+- In a RESTful interface, a `PUT` request is most often used as an "update" operation.
+
+6. DELETE
+
+- A `DELETE` request has not request or response content
+
+```
+ersatzServer.expectations {
+  DELETE('/user').query('id', '1234').responds().code(200)
+}
+```
+
+- In a RESTful interface, a `DELETE` request may be used as a "delete" operation.
+
+7. PATCH
+
+- `PATCH` request method creates a request that can have a body content; however, the response will have no content
+
+```
+ersatzServer.expectations {
+  PATCH('/user') {
+    query('id', '1234')
+    body('{"middle": "Q"}', APPLICATION_JSON)
+    responder {
+      code(200)
+    }
+  }
+}
+```
+
+- In a RESTful interface, a `PATCH` request may be used as a "modify" operation for an existing resource.
+
+8. ANY
+
+- The `ANY` request method creates a request expectation that can match any HTTP method
+
+```
+server.expectations(expect -> {
+  expect.ANY("/something", req -> {
+    req.secure();
+    req.called(1);
+    req.responder(res -> res.body(responseText, TEXT_PLAIN));
+  });
+});
+```
+
+9. Generic Method
+
+- In versinon 3.2 a generic set of request expectation methods were added to allow the definition of request expectations based on variable HTTP request methods:
+
+* `request(final HttpMethod method, final String path`)
+
+```
+server.expectations(expect -> {
+  expect.request(HttpMethod.GET, "/api/users");
+});
+```
+
+- `request(final HttpMethod method, final Matcher<String> matcher)`
+
+```
+import static org.hamcrest.Matchers.*;
+
+server.expectations(expect -> {
+  expect.request(HttpMethod.POST, matchesPattern("/api/users/\\d+"));
+});
+```
+
+- `request(final HttpMethod method, final String path, Consumer<Request>consumer)`
+
+```
+server.expectations(expect -> {
+  expect.request(HttpMethod.PUT, "/api/users/123", req -> {
+    req.header("Authorization", "Bearer token123");
+    req.body("{\"name\": \"John\"}", ContentType.APPLICATION_JSON)
+  })
+})
+```
+
+- `request(final HttpMethod method, final Matcher<String> matcher, final Consumer<Request> consumer)`
+
+```
+import static org.hamcrest.Matchers.*;
+
+server.expectations(expect -> {
+  expect.request(HttpMethod.DELETE, matchesPattern("/api/users/\\d+"). req -> {
+    req.query("id", "1234");
+    req.responder(res -> {
+      res.code(200);
+    });
+  });
+});
+```
+
+- `request(final HttpMethod method, final PathMatcher pathMatcher)`
+
+```
+import static io.github.artsok.Repeatedly.*;
+
+server.expectations(expect -> {
+  eexpect.request(HttpMethod.PATCH, any());
+});
+```
+
+- `request(final HttpMethod method, final PathMatcher pathMatcher, Consumer<Request> consumer)`
+
+```
+import static io.github.artsok.Repeatedly.*;
+
+server.expectations(expect -> {
+  expect.request(HttpMethod.PATCH, any(), req -> {
+    req.body("{}", ContentType.APPLICATION_JSON);
+    req.responder(res -> {
+      res.code(204);
+    });
+  });
+});
+```
+
+10. TRACE
+
+- THE `TRACE` method is generally meant for debugging and diagnostics. The request will have no request content; however, if the request is valid, the response will contain the entire request message in the entity-body, with a Content-Type of `message/http`.
+
+- Making a `TRACE` request to Ersatz looks like the following:
+
+```
+ersatzServer.start()
+
+URL url = new URL("${ersatzServer.httpUrl}/info?data=foo+bar")
+
+HttpURLConnection connection = url.openConnection() as HttpURLConnection
+connection.requestMethod = 'TRACE'
+
+assert connection.contentType == MESSAGE_HTTP.value
+assert connection.responseCode == 200
+
+assert connection.inputStream.text.readLines()*.trim() == """TRACE /info?data=foo+barHTTP/1.1
+    Accept: text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2
+    Connection: keep-alive
+    User-Agent: Java/1.9.0.1_121
+    Host: localhost:${ersatzServer.httpPort}
+""".readLines()*.trim()
+```
+
+- The explicit `start()` call is required since there are no expectations specified (auto-start won't fire). The `HtpUrlConnection` is used to make the request, and it can be seen that the response content is the same as the original request content.
+
+# Verification
+
+- A timeout parameter is available on the `verify` method so that a failed verification can fail-out in a timely manner, while still waiting for messages that are not coming
+
+```
+// Verifying expectations with a timeout of 5 seconds
+boolean verificationResult = server.verify(5000, TimeUnit.MILLISECONDS);
+
+if (verificationResult) {
+  System.out.println("All expected requests were received within the timeout period.");
+} else {
+  System.out.println("Some expected requests were not received within the timeout period or not at all.")
+}
+```
