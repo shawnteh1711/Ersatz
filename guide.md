@@ -1049,3 +1049,224 @@ if (verificationResult) {
   System.out.println("Some expected requests were not received within the timeout period or not at all.")
 }
 ```
+
+# Hamcrest Matchers
+
+- allow for a morerich and expressive matching configuration/
+
+```
+server.expectations{
+  GET(startsWith('/foo)) {
+    called greaterThanOrRqualto(2)
+    query 'user-key', notNullVAlue()
+    responder {
+      body 'ok', TEXT_PLAIN
+    }  
+  }
+}
+```
+
+# Specialized Matchers
+
+- found in the `io.github.cjstehno.ersatz.match` package
+- Examples
+  - BodyMatcher
+  - BodyParamMatcher
+  - PathMatcher
+  - QueryParamMatcher
+  - HeaderMatcher
+  - RequestCookiesMatcher
+  - PredicateMatcher (predicateis a condition to test whether condition is true or false. Example: isEven(), isPrime, startsWith(prefix, str))
+
+# Matching Cookies
+- There are four methods for matching cookies associated with a requst
+
+1. By Name and Matcher
+- The `cookie(String name, Matcher<Cookie>matcher)` configures matcher for the cookie with the given name
+
+```
+server.expectations{
+  GET('/somewhere') {
+    cookie 'user-key', CookieMatcher.cookieMatcher {
+      value startsWith('key-')
+      domain 'mydomain.com'
+    }
+    responds().code(200)
+  }
+}
+```
+
+2. By Name and Value
+- method where cookie value must be qual to the specified value
+```
+server.expectations {
+  GET('/somewhere') {
+    cookie 'user-key', CookieMatcher.cookieMatcher {
+      value equalTo('key-2345HJKSDGF86)
+    }
+    responds().code(200)
+  }
+}
+```
+
+3. Multiple Cookies
+- the cookies (`Map<String, Object>`) provides a mean of configuration multiple cookie matchers
+```
+server.expectations {
+  GET('/something') {
+    cookies([
+      'user-key': cookieMatcher {
+        value startsWith('key-')
+      },
+      'appid': 'user-manager',
+      'timeout': nullValue()
+    ])
+    responds().code(200)
+  }
+}
+```
+
+
+Overall Matcher
+- the `the cookes(Matcher<Map<String, Cookie>)` is used to specify a Matcher for the map of cookie names to `io.github.cjstehno.ersatz.cfg.Cookie` objects
+or the `io.github.cjstehno.ersatz.match.NoCookiesMatcher` to match case where no cookies should be defined n the requests
+
+```
+server.expectations{
+  GET('/something'){
+    cookies NoCookiesMatcher.noCookies()
+    responds().code(200)
+  }
+}
+```
+
+# Multipart Request Content
+- Ersatz server supports multipart file upload request (`multipart/form-data` content-type) using Apache File Upload libary libary on the "server" side.
+
+```
+ersatz.expectations {
+  POST('/upload') {
+    decoder MULTIPART_MIXED, Decoders.multipart
+    decoder IMAGE_PNG, Decpders.passthrough
+    body multipart {
+      part 'something', 'interesting'
+      part 'infoFile', 'info.txt', TEXT_PLAIN, infoText
+      part 'imageFile', 'image.png', IMAGE_PNG, imageBytes
+    }, MULTIPART_MIXED
+    responder {
+      body 'ok
+    }
+  }
+}
+```
+
+# Response Building
+- `responds(...), responder(...) and forward(...)` method allow for customization of the response to the request.
+- Basic response properties such as headers, status code, and content body are available, as well as more afvanced configuration options, described below:
+
+1. Request/Response Compression
+- Ersatz support GZip compression seamlessly as long as the `Accept-Encoding` header is specified as gzip. If the response is compressed, a Content-Encoding header will be added to the response with the appropriate compression type as value.
+
+```
+ersatz.expectations {
+  GET('/api/data') {
+    requestHeader 'Accept-Encoding', 'gzip'
+    responds {
+      status 200
+      header 'Content-Type', 'application/json'
+      header 'Content-Encoding', 'gzip'
+      body gzipCompress('{"name": "John", "age": "30"})
+    }
+  }
+}
+```
+
+2. Chunked Response
+- a response may be configured as a "chunked" response, wherein the response data is dent to clinet in small bits along with additional response header, the `Transfer-encoding: chunked`.
+- for testing purpose, a fixed or randomized range of time of delay may be configured so that the chunks may be sent slowly, to more accurately simulate a real environment.
+
+```
+ersatzServer.expectations {
+  GET('/chunky').responder {
+    body 'This is chunked content' TEXT_PLAIN
+    chunked {
+      chunks 3
+      delay 100..500
+    }
+  }
+}
+```
+
+# Multipart Response Content
+- the response content will have standard `multipart/form-data` content type and format.
+- the response content parts are provided using an instance of the `MultipartResponseContent` class along with the `Encoders.multipart` multipart response content encoder
+- an example multipart response with a field and an image file would be like:
+
+
+```
+ersatz.expectations {
+  GET('/data') {
+    responder {
+      encoder ContentType.MULTIPART_MIXED, MultipartResponseContent, Encoders.multipart
+      body(multipart {
+        encoder TEXT_PLAIN, CharSequence { o -> (o as String).bytes}
+        encoder IMAGE_JPG, File, {o -> ((File)o).bytes }
+
+        field 'comments', 'This is a cool image.'
+        part 'image', 'test-image.jpg', IMAGE_JPG, new File('/test-image.jpg'), 'base64'
+      })
+    }
+  }
+}
+```
+
+
+- The resulting response body would look like following as a String
+
+```
+--WyAJDTEVlYgGjdI13o
+Content-Disposition: form-data; name="comments"
+Content-Type: text/plain
+
+This is a cool image.
+--WyAJDTEVlYgGjdI13o
+Content-Disposition: form-data; name="image"; filename="test-image.jpg"
+Content-Transfer-Encoding: base64
+Content-Type: image/jpeg
+
+... more content follows ...
+```
+
+# Request Forwarding
+- the `forward(String)` response configuration method causes the incoming reuqest to be forwarded to another server.
+- the `String` parameter is the scheme, host, and port of the target server.
+
+```
+ersatz.expectations(expect -> {
+  expect.GET("/api/widgets/list", req -> {
+    req.called()
+    req.query("partial", "true")
+    req.forward("http://somehost:1234");
+  });
+});
+```
+
+- This will expect that a GET request `/api/widgets/list?partial==true` will be called once and that its response will be the response from making the same request against `http://somehost:1234/api/widgets/list?partial=true`.
+
+# Web socket
+- websocket support is provided in the "expectations" configuration. You can expect that a websocket is connected-to, and that it-receives a specified message. You can also "react" to the connection or inbound message by sending a message back to the client.
+
+```
+def server = ersatz.expectations(expect -> {
+  expect.webSocket("/game", ws -> {
+    ws.receives(pingBytes).reaction(pongBytes, BINARY)
+  })
+})
+
+server.verify(WaitFor.FOREVER)'
+```
+
+- the server expects that a websocket connection occurs for "/game", when the connection occurs, the server will exwhen it receibvpect to receive a message of `pingBytes`. When it receives the message, it will respond with a message `pongBytes` in `BINARY` format
+
+- verification timeouts: sometimes when running asynchronous network tests, you can run into issues on different environments. The `verify` method accept a `WaitFor` parameter which allows you to configure a wait time. One useful value here is `FOREVER` which causes the test verification to wait for the expected condition
+
